@@ -1,0 +1,18 @@
+{
+  "template": "https://github.com/woltapp/wolt-python-package-cookiecutter",
+  "commit": "4eecc9c4d27e3c9321438bc1fdaf717bec5eadf6",
+  "checkout": null,
+  "context": {
+    "cookiecutter": {
+      "author_name": "Steven Braun",
+      "author_email": "steven.braun.mz@gmail.com",
+      "github_username": "braun-steven",
+      "project_name": "runitall",
+      "project_slug": "runitall",
+      "package_name": "runitall",
+      "project_short_description": "A task runner that manages dependencies.",
+      "_template": "https://github.com/woltapp/wolt-python-package-cookiecutter"
+    }
+  },
+  "directory": null
+}

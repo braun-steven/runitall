@@ -131,7 +131,7 @@ class Task(ABC):
             [dependency.state == TaskState.FINISHED for dependency in self.depends_on]
         )
 
-    def wait_for_dependencies(self, sleep_time=10):
+    def wait_for_dependencies(self, sleep_time=10, stop_event: threading.Event = None):
         """Check if all dependencies are finished.
 
         If not, wait for a given amount of time and check again.
@@ -145,6 +145,11 @@ class Task(ABC):
 
         # If dependencies are given, check if state is finished
         while not self.check_all_dependencies_finished():
+
+            if stop_event.is_set():
+                logger.error("Received keyboard interrupt, quitting threads.")
+                raise KeyboardInterrupt
+
             logger.info(
                 f"Trying to run {self} but dependence on tasks {self.depends_on} is not fulfilled yet. Sleeping another 10 seconds."
             )
@@ -163,7 +168,7 @@ class Task(ABC):
         self.state = TaskState.RUNNING
 
     @abstractmethod
-    def run(self, resources: queue.Queue):  # pragma: no cover
+    def run(self, resources: queue.Queue, stop_event: threading.Event):  # pragma: no cover
         """
         Run the task.
         A list of resources is given instead of a single resource since:
@@ -172,6 +177,7 @@ class Task(ABC):
 
         Args:
             resources: Queue of resources to use.
+            stop_event: Event to signal threads to stop.
         """
         pass
 
@@ -197,8 +203,8 @@ class ShellTask(Task):
         # Command to run
         self.command = command
 
-    def run(self, resources: queue.Queue):
-        self.wait_for_dependencies()
+    def run(self, resources: queue.Queue, stop_event: threading.Event):
+        self.wait_for_dependencies(stop_event=stop_event)
         self.mark_running()
         resource = resources.get()
         logger.info(f"Working on {resource}")
@@ -218,7 +224,7 @@ class ShellTask(Task):
         return f"Task({self.command}, state={self.state}, depends_on={self.depends_on})"
 
 
-def _worker(task_queue: queue.Queue, resources: queue.Queue) -> None:
+def _worker(task_queue: queue.Queue, resources: queue.Queue, stop_event: threading.Event) -> None:
     """
     Thread worker method. Takes a task from the task queue and runs it with the resource queue.
 
@@ -228,7 +234,7 @@ def _worker(task_queue: queue.Queue, resources: queue.Queue) -> None:
     """
     # Run task with queue of resources
     task = task_queue.get()
-    task.run(resources)
+    task.run(resources=resources, stop_event=stop_event)
     task_queue.task_done()
 
 

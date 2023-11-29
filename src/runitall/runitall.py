@@ -203,7 +203,9 @@ class ShellTask(Task):
         # Command to run
         self.command = command
 
-    def run(self, resources: queue.Queue, stop_event: threading.Event):
+    def run(self, resources: queue.Queue, stop_event: threading.Event=None):
+        if stop_event is None:
+            stop_event = threading.Event()
         self.wait_for_dependencies(stop_event=stop_event)
         self.mark_running()
         resource = resources.get()
@@ -267,7 +269,7 @@ def run_tasks(tasks: List[Task], resources: List[Resource]):
     try:
         for _ in tasks:
             t = threading.Thread(
-                target=_worker, daemon=True, args=(task_queue, resource_queue, stop_event)
+                target=_worker, daemon=False, args=(task_queue, resource_queue, stop_event)
             )
             time.sleep(2)
             t.start()

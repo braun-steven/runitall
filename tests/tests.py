@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 
-from runitall import run_tasks
+from src.runitall import run_tasks
 import time
 import queue
 import unittest
 
-from runitall.runitall import (
+from src.runitall.runitall import (
     run_shell_command_with_resource,
     parse_resource_integer_string,
     RESOURCE_PLACEHOLDER,

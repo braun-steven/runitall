@@ -20,8 +20,30 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class Resource:
+    """Simple class to represent a resource (e.g. GPU, CPU, PORT, etc.)."""
+
+    def __init__(self, label: Union[str, int], name: Optional[str] = None) -> None:
+        """
+        Args:
+            label: Label/id of the resource.
+            name: Name of the resource.
+        """
+        self.label = label
+
+        # If no name is given, use "Resource" as default name
+        if name is None:
+            name = "R"
+        self.name = name
+
+    def __repr__(self) -> str:
+        return f"{self.name}-{self.label}"
+
+
 def parse_resource_integer_string(
-    resource_integer_string: str, repetitions: int = 1
+    resource_integer_string: str,
+    repetitions: int = 1,
+    resource_name: Optional[str] = None,
 ) -> List["Resource"]:
     """
     Parse a comma-separated list of integers.
@@ -55,52 +77,117 @@ def parse_resource_integer_string(
             resources.append(tag)
     resources = list(set(resources))  # Ensure unique resources
     resources = resources * repetitions  # Repeat resources
-    return list(sorted([Resource(r) for r in resources], key=lambda r: r.label))
+    return list(
+        sorted(
+            [Resource(r, name=resource_name) for r in resources], key=lambda r: r.label
+        )
+    )
 
 
 def run_shell_command_with_resource(
-    command: str, resource: "Resource", return_stdout: bool = False
+    command: str,
+    resource: Resource,
+    return_stdout: bool = False,
 ) -> Optional[str]:
     """
+    Runs a shell command, replacing a placeholder with the resource label.
+    Writes stdout in a streaming fashion to /tmp/runitall/{command_with_underscores}.log.
 
     Args:
-      command: Comand to run.
-      resource: Resource to use.
-      return_stdout: If True, return stdout of command.
+        command: Command to run. Spaces will be replaced by underscores for the filename.
+                 Must contain RESOURCE_PLACEHOLDER.
+        resource: Resource object with a 'label' attribute.
+        return_stdout: If True, return stdout of command.
 
     Returns:
         Optional[str]: Stdout of command if return_stdout is True, else None.
-
+                       Returns None on failure to create directories or execute command.
     """
-    assert (
-        RESOURCE_PLACEHOLDER in command
-    ), f"Resource placeholder '{RESOURCE_PLACEHOLDER}' was not present in command ({command}). Insert the placeholder manually or use 'from runitall import RESOURCE_PLACEHOLDER'."
-    command = command.replace(RESOURCE_PLACEHOLDER, str(resource.label))
-    logger.info(f"Running command on resource <{resource}> " + command)
-    p = Popen(command, shell=True, stdout=PIPE, stderr=PIPE)
-    stdout, stderr = p.communicate()
-    if return_stdout:
-        return stdout.decode("utf-8")
+    # Prepare filename and path
+    # Replace spaces in the original command string with underscores for the filename part.
+    # Added .log extension for clarity.
+    sanitized_command_for_filename = command.replace(" ", "_") + ".log"
 
+    base_output_dir = "/tmp/runitall"
+    # If sanitized_command_for_filename contains '/', os.path.join will handle it correctly.
+    # e.g., if command is "tools/mytool arg", filename becomes "tools/mytool_arg.log"
+    # and output_filepath will be "/tmp/runitall/tools/mytool_arg.log"
+    output_filepath = os.path.join(base_output_dir, sanitized_command_for_filename)
 
-class Resource:
-    """Simple class to represent a resource (e.g. GPU, CPU, PORT, etc.)."""
+    # Ensure the full directory path for the output file exists
+    output_file_dir = os.path.dirname(output_filepath)
+    try:
+        os.makedirs(output_file_dir, exist_ok=True)
+    except OSError as e:
+        logger.error(f"Failed to create directory {output_file_dir}: {e}")
+        return None
 
-    def __init__(self, label: Union[str, int], name: Optional[str] = None) -> None:
-        """
-        Args:
-            label: Label/id of the resource.
-            name: Name of the resource.
-        """
-        self.label = label
+    # Prepare the command for execution by replacing the placeholder
+    executed_command = command.replace(RESOURCE_PLACEHOLDER, str(resource.label))
 
-        # If no name is given, use "Resource" as default name
-        if name is None:
-            name = "Resource"
-        self.name = name
+    logger.info(f"Running command on resource {resource}: {executed_command}")
+    logger.info(f"Streaming stdout to: {output_filepath}")
 
-    def __repr__(self) -> str:
-        return f"{self.name}({self.label})"
+    collected_stdout_lines = [] if return_stdout else None
+
+    try:
+        # Execute the command.
+        # - shell=True: Inherited from original, be cautious with untrusted command content.
+        # - stdout=PIPE: Capture stdout.
+        # - stderr=PIPE: Capture stderr.
+        # - text=True: Decode stdout/stderr as text (using utf-8 by default on many systems).
+        # - encoding='utf-8': Explicitly set encoding for consistent behavior.
+        # - errors='replace': Replace decoding errors with a placeholder character.
+        # - bufsize=1: Line-buffered, so each line is available as soon as the subprocess writes it.
+        process = Popen(
+            executed_command,
+            shell=True,
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,  # Line-buffered
+        )
+
+        # Stream stdout to file and optionally collect it
+        with open(output_filepath, "w", encoding="utf-8") as f_out:
+            if process.stdout:
+                for line in process.stdout:  # Iterates as lines are produced
+                    f_out.write(line)
+                    f_out.flush()  # Ensure data is written to disk immediately
+                    if return_stdout and collected_stdout_lines is not None:
+                        collected_stdout_lines.append(line)
+
+        # Wait for the process to terminate. This also ensures all pipes are closed
+        # and the process object is updated with the return code.
+        # stderr_output will contain any standard error output.
+        # stdout_from_communicate will be empty or None here because process.stdout was already consumed.
+        _, stderr_output = process.communicate()
+
+        if process.returncode != 0:
+            logger.error(
+                f"Command '{executed_command}' failed with return code {process.returncode}"
+            )
+            if stderr_output:
+                logger.error(f"Stderr: {stderr_output.strip()}")
+            # The original function didn't change its return behavior based on command failure,
+            # it would still return stdout if requested. We maintain this.
+
+        if return_stdout and collected_stdout_lines is not None:
+            return "".join(collected_stdout_lines)
+        return None  # Return None if not returning stdout or if an early error occurred
+
+    except FileNotFoundError:
+        logger.error(
+            f"Command not found (ensure it's in PATH or use absolute path): {executed_command.split()[0] if executed_command else 'N/A'}"
+        )
+        return None
+    except Exception as e:
+        logger.error(
+            f"An error occurred while preparing or running command '{executed_command}': {e}"
+        )
+        return None
 
 
 class TaskState(Enum):
@@ -168,7 +255,9 @@ class Task(ABC):
         self.state = TaskState.RUNNING
 
     @abstractmethod
-    def run(self, resources: queue.Queue, stop_event: threading.Event):  # pragma: no cover
+    def run(
+        self, resources: queue.Queue, stop_event: threading.Event
+    ):  # pragma: no cover
         """
         Run the task.
         A list of resources is given instead of a single resource since:
@@ -203,7 +292,7 @@ class ShellTask(Task):
         # Command to run
         self.command = command
 
-    def run(self, resources: queue.Queue, stop_event: threading.Event=None):
+    def run(self, resources: queue.Queue, stop_event: threading.Event = None):
         if stop_event is None:
             stop_event = threading.Event()
         self.wait_for_dependencies(stop_event=stop_event)
@@ -226,7 +315,9 @@ class ShellTask(Task):
         return f"Task({self.command}, state={self.state}, depends_on={self.depends_on})"
 
 
-def _worker(task_queue: queue.Queue, resources: queue.Queue, stop_event: threading.Event) -> None:
+def _worker(
+    task_queue: queue.Queue, resources: queue.Queue, stop_event: threading.Event
+) -> None:
     """
     Thread worker method. Takes a task from the task queue and runs it with the resource queue.
 
@@ -248,7 +339,9 @@ def _make_queue(objects: List[Any]) -> queue.Queue:
     return q
 
 
-def run_tasks(tasks: List[Task], resources: List[Resource]):
+def run_tasks(
+    tasks: List[Task], resources: List[Resource], wait_between_task_starts: int = 2
+):
     """
     Run a list of tasks on a list of resources.
 
@@ -269,9 +362,11 @@ def run_tasks(tasks: List[Task], resources: List[Resource]):
     try:
         for _ in tasks:
             t = threading.Thread(
-                target=_worker, daemon=False, args=(task_queue, resource_queue, stop_event)
+                target=_worker,
+                daemon=False,
+                args=(task_queue, resource_queue, stop_event),
             )
-            time.sleep(2)
+            time.sleep(wait_between_task_starts)
             t.start()
 
         task_queue.join()

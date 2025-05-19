@@ -106,7 +106,7 @@ def run_shell_command_with_resource(
     # Prepare filename and path
     # Replace spaces in the original command string with underscores for the filename part.
     # Added .log extension for clarity.
-    sanitized_command_for_filename = command.replace(" ", "_") + ".log"
+    sanitized_command_for_filename = command.replace(" ", "_").replace("/", "_") + ".log"
 
     base_output_dir = "/tmp/runitall"
     # If sanitized_command_for_filename contains '/', os.path.join will handle it correctly.

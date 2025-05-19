@@ -110,7 +110,9 @@ def run_shell_command_with_resource(
     # Prepare filename and path
     # Replace spaces in the original command string with underscores for the filename part.
     # Added .log extension for clarity.
-    sanitized_command_for_filename = executed_command.replace(" ", "_").replace("/", "_") + ".log"
+    sanitized_command_for_filename = (
+        executed_command.replace(" ", "_").replace("/", "_") + ".log"
+    )
 
     base_output_dir = "/tmp/runitall"
     # If sanitized_command_for_filename contains '/', os.path.join will handle it correctly.
@@ -123,11 +125,11 @@ def run_shell_command_with_resource(
     try:
         os.makedirs(output_file_dir, exist_ok=True)
     except OSError as e:
-        logger.error(f"Failed to create directory {output_file_dir}: {e}")
+        logger.error(f"[{resource}] Failed to create directory {output_file_dir}: {e}")
         return None
 
-    logger.info(f"Running command on resource {resource}: {executed_command}")
-    logger.info(f"Streaming stdout to: {output_filepath}")
+    logger.info(f"[{resource}] Running command: {executed_command}")
+    logger.info(f"[{resource}] Streaming stdout to: {output_filepath}")
 
     collected_stdout_lines = [] if return_stdout else None
 
@@ -168,7 +170,7 @@ def run_shell_command_with_resource(
 
         if process.returncode != 0:
             logger.error(
-                f"Command '{executed_command}' failed with return code {process.returncode}"
+                f"[{resource}] Command '{executed_command}' failed with return code {process.returncode}"
             )
             if stderr_output:
                 logger.error(f"Stderr: {stderr_output.strip()}")
@@ -181,12 +183,12 @@ def run_shell_command_with_resource(
 
     except FileNotFoundError:
         logger.error(
-            f"Command not found (ensure it's in PATH or use absolute path): {executed_command.split()[0] if executed_command else 'N/A'}"
+            f"[{resource}] Command not found (ensure it's in PATH or use absolute path): {executed_command.split()[0] if executed_command else 'N/A'}"
         )
         return None
     except Exception as e:
         logger.error(
-            f"An error occurred while preparing or running command '{executed_command}': {e}"
+            f"[{resource}] An error occurred while preparing or running command '{executed_command}': {e}"
         )
         return None
 
@@ -299,9 +301,9 @@ class ShellTask(Task):
         self.wait_for_dependencies(stop_event=stop_event)
         self.mark_running()
         resource = resources.get()
-        logger.info(f"Working on {resource}")
+        logger.info(f"[{resource}] Working on")
         run_shell_command_with_resource(self.command, resource=resource)
-        logger.info(f"Finished on {resource}")
+        logger.info(f"[{resource}] Finished")
 
         # Mark resource task as done
         resources.task_done()

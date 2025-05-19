@@ -103,10 +103,14 @@ def run_shell_command_with_resource(
         Optional[str]: Stdout of command if return_stdout is True, else None.
                        Returns None on failure to create directories or execute command.
     """
+
+    # Prepare the command for execution by replacing the placeholder
+    executed_command = command.replace(RESOURCE_PLACEHOLDER, str(resource.label))
+
     # Prepare filename and path
     # Replace spaces in the original command string with underscores for the filename part.
     # Added .log extension for clarity.
-    sanitized_command_for_filename = command.replace(" ", "_").replace("/", "_") + ".log"
+    sanitized_command_for_filename = executed_command.replace(" ", "_").replace("/", "_") + ".log"
 
     base_output_dir = "/tmp/runitall"
     # If sanitized_command_for_filename contains '/', os.path.join will handle it correctly.
@@ -121,9 +125,6 @@ def run_shell_command_with_resource(
     except OSError as e:
         logger.error(f"Failed to create directory {output_file_dir}: {e}")
         return None
-
-    # Prepare the command for execution by replacing the placeholder
-    executed_command = command.replace(RESOURCE_PLACEHOLDER, str(resource.label))
 
     logger.info(f"Running command on resource {resource}: {executed_command}")
     logger.info(f"Streaming stdout to: {output_filepath}")

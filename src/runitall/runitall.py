@@ -85,112 +85,32 @@ def parse_resource_integer_string(
 
 
 def run_shell_command_with_resource(
-    command: str,
-    resource: Resource,
-    return_stdout: bool = False,
+    command: str, resource: "Resource", return_stdout: bool = False
 ) -> Optional[str]:
     """
-    Runs a shell command, replacing a placeholder with the resource label.
-    Writes stdout in a streaming fashion to /tmp/runitall/{command_with_underscores}.log.
-
     Args:
-        command: Command to run. Spaces will be replaced by underscores for the filename.
-                 Must contain RESOURCE_PLACEHOLDER.
-        resource: Resource object with a 'label' attribute.
-        return_stdout: If True, return stdout of command.
+      command: Comand to run.
+      resource: Resource to use.
+      return_stdout: If True, return stdout of command.
 
     Returns:
         Optional[str]: Stdout of command if return_stdout is True, else None.
-                       Returns None on failure to create directories or execute command.
+
+
     """
 
-    # Prepare the command for execution by replacing the placeholder
-    executed_command = command.replace(RESOURCE_PLACEHOLDER, str(resource.label))
+    assert (
+        RESOURCE_PLACEHOLDER in command
+    ), f"Resource placeholder '{RESOURCE_PLACEHOLDER}' was not present in command ({command}). Insert the placeholder manually or use 'from runitall import RESOURCE_PLACEHOLDER'."
 
-    # Prepare filename and path
-    # Replace spaces in the original command string with underscores for the filename part.
-    # Added .log extension for clarity.
-    sanitized_command_for_filename = (
-        executed_command.replace(" ", "_").replace("/", "_") + ".log"
-    )
+    command = command.replace(RESOURCE_PLACEHOLDER, str(resource.label))
+    logger.info(f"[{resource}] Running command on resource <{resource}> \n" + command)
+    p = Popen(command, shell=True, stdout=PIPE, stderr=PIPE)
+    stdout, stderr = p.communicate()
+    print(stdout.decode("utf-8"))
 
-    base_output_dir = "/tmp/runitall"
-    # If sanitized_command_for_filename contains '/', os.path.join will handle it correctly.
-    # e.g., if command is "tools/mytool arg", filename becomes "tools/mytool_arg.log"
-    # and output_filepath will be "/tmp/runitall/tools/mytool_arg.log"
-    output_filepath = os.path.join(base_output_dir, sanitized_command_for_filename)
-
-    # Ensure the full directory path for the output file exists
-    output_file_dir = os.path.dirname(output_filepath)
-    try:
-        os.makedirs(output_file_dir, exist_ok=True)
-    except OSError as e:
-        logger.error(f"[{resource}] Failed to create directory {output_file_dir}: {e}")
-        return None
-
-    logger.info(f"[{resource}] Running command: {executed_command}")
-    logger.info(f"[{resource}] Streaming stdout to: {output_filepath}")
-
-    collected_stdout_lines = [] if return_stdout else None
-
-    try:
-        # Execute the command.
-        # - shell=True: Inherited from original, be cautious with untrusted command content.
-        # - stdout=PIPE: Capture stdout.
-        # - stderr=PIPE: Capture stderr.
-        # - text=True: Decode stdout/stderr as text (using utf-8 by default on many systems).
-        # - encoding='utf-8': Explicitly set encoding for consistent behavior.
-        # - errors='replace': Replace decoding errors with a placeholder character.
-        # - bufsize=1: Line-buffered, so each line is available as soon as the subprocess writes it.
-        process = Popen(
-            executed_command,
-            shell=True,
-            stdout=PIPE,
-            stderr=PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            bufsize=1,  # Line-buffered
-        )
-
-        # Stream stdout to file and optionally collect it
-        with open(output_filepath, "w", encoding="utf-8") as f_out:
-            if process.stdout:
-                for line in process.stdout:  # Iterates as lines are produced
-                    f_out.write(line)
-                    f_out.flush()  # Ensure data is written to disk immediately
-                    if return_stdout and collected_stdout_lines is not None:
-                        collected_stdout_lines.append(line)
-
-        # Wait for the process to terminate. This also ensures all pipes are closed
-        # and the process object is updated with the return code.
-        # stderr_output will contain any standard error output.
-        # stdout_from_communicate will be empty or None here because process.stdout was already consumed.
-        _, stderr_output = process.communicate()
-
-        if process.returncode != 0:
-            logger.error(
-                f"[{resource}] Command '{executed_command}' failed with return code {process.returncode}"
-            )
-            if stderr_output:
-                logger.error(f"Stderr: {stderr_output.strip()}")
-            # The original function didn't change its return behavior based on command failure,
-            # it would still return stdout if requested. We maintain this.
-
-        if return_stdout and collected_stdout_lines is not None:
-            return "".join(collected_stdout_lines)
-        return None  # Return None if not returning stdout or if an early error occurred
-
-    except FileNotFoundError:
-        logger.error(
-            f"[{resource}] Command not found (ensure it's in PATH or use absolute path): {executed_command.split()[0] if executed_command else 'N/A'}"
-        )
-        return None
-    except Exception as e:
-        logger.error(
-            f"[{resource}] An error occurred while preparing or running command '{executed_command}': {e}"
-        )
-        return None
+    if return_stdout:
+        return stdout.decode("utf-8")
 
 
 class TaskState(Enum):
@@ -382,3 +302,18 @@ def run_tasks(
         for t in threading.enumerate():
             if t is not threading.current_thread():
                 t.join()
+
+
+if __name__ == "__main__":
+
+    # example command that runs python -c '' and a for loop that prints i and sleeps for 0.5s after each iteration using tqdm
+    cmd = f"python -c 'from tqdm import trange; from time import sleep; exec(\"for i in range(10):\\n    print(i, {RESOURCE_PLACEHOLDER})\\n    sleep(0.5)\")'"
+
+    task = ShellTask(
+        command=cmd,
+        depends_on=None,
+    )
+    run_tasks(
+        tasks=[task],
+        resources=[Resource(label=0, name="GPU")],
+    )

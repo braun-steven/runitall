@@ -88,29 +88,158 @@ def run_shell_command_with_resource(
     command: str, resource: "Resource", return_stdout: bool = False
 ) -> Optional[str]:
     """
+    Runs a shell command, replacing a placeholder with the resource label,
+    streams its standard output in real-time to a file, and optionally returns it.
+
     Args:
-      command: Comand to run.
-      resource: Resource to use.
-      return_stdout: If True, return stdout of command.
+        command: Command to run. Must contain RESOURCE_PLACEHOLDER.
+        resource: Resource object to use. Its label will replace the placeholder.
+        return_stdout: If True, collect and return all stdout lines as a single string.
 
     Returns:
-        Optional[str]: Stdout of command if return_stdout is True, else None.
-
-
+        Optional[str]: Concatenated stdout if return_stdout is True, else None.
     """
 
     assert (
         RESOURCE_PLACEHOLDER in command
-    ), f"Resource placeholder '{RESOURCE_PLACEHOLDER}' was not present in command ({command}). Insert the placeholder manually or use 'from runitall import RESOURCE_PLACEHOLDER'."
+    ), f"Resource placeholder '{RESOURCE_PLACEHOLDER}' was not present in command ({command}). Insert the placeholder manually."
 
-    command = command.replace(RESOURCE_PLACEHOLDER, str(resource.label))
-    logger.info(f"[{resource}] Running command on resource <{resource}> \n" + command)
-    p = Popen(command, shell=True, stdout=PIPE, stderr=PIPE)
-    stdout, stderr = p.communicate()
-    print(stdout.decode("utf-8"))
+    # Replace the placeholder with the actual resource label
+    command_with_resource = command.replace(RESOURCE_PLACEHOLDER, str(resource.label))
 
-    if return_stdout:
-        return stdout.decode("utf-8")
+    logger.info(
+        f"[{resource}] Preparing to run command on resource <{resource}>:\n{command_with_resource}"
+    )
+
+    # Sanitize the command string to create a valid filename
+    # Replace spaces, forward slashes, and backslashes with underscores
+    sanitized_command_filename = re.sub(r"[ /\\]", "_", command_with_resource)
+    # Further sanitize to remove characters that might be problematic in filenames
+    sanitized_command_filename = re.sub(r"[^\w\.-_]", "", sanitized_command_filename)
+    # Limit filename length if necessary (e.g., to 255 characters)
+    max_filename_len = 200
+    if len(sanitized_command_filename) > max_filename_len:
+        # Take a part of the beginning and a hash of the full command to keep it somewhat unique
+        # and identifiable, while avoiding excessive length.
+        command_hash = str(hash(command_with_resource))[-8:]  # Last 8 chars of hash
+        sanitized_command_filename = (
+            f"{sanitized_command_filename[:max_filename_len-10]}_{command_hash}"
+        )
+
+    # Define the output directory and filename
+    output_dir = Path("/tmp/runitall")
+    output_file_path = output_dir / f"{sanitized_command_filename}.stdout.log"
+
+    # Create the output directory if it doesn't exist
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        logger.info(f"[{resource}] STDOUT will be written to: {output_file_path}")
+    except OSError as e:
+        logger.error(
+            f"[{resource}] Failed to create output directory {output_dir}: {e}"
+        )
+        # Decide how to handle this: raise error, or proceed without file logging for this command
+        # For now, we'll proceed, and writing to the file will likely fail if dir creation failed.
+        # Alternatively, one could raise an exception here.
+        # raise # or return None, or some error indicator
+
+    collected_stdout_lines: List[str] = []
+
+    try:
+        # Start the subprocess
+        process = Popen(
+            command_with_resource,
+            shell=True,
+            stdout=PIPE,
+            stderr=PIPE,
+            text=True,
+            bufsize=1,
+        )
+
+        logger.info(
+            f"[{resource}] Command started. Streaming STDOUT to {output_file_path}..."
+        )
+
+        # Open the output file for writing
+        with open(output_file_path, "w", encoding="utf-8") as outfile:
+            if process.stdout:
+                for line in iter(process.stdout.readline, ""):
+                    # Write line to file (it already includes newline if present from source)
+                    outfile.write(line)
+                    outfile.flush()  # Ensure the line is written immediately
+                    if return_stdout:
+                        collected_stdout_lines.append(
+                            line.rstrip()
+                        )  # rstrip for collection
+
+        process.wait()
+
+        stderr_output = ""
+        if process.stderr:
+            stderr_output = process.stderr.read().rstrip()
+
+        if process.returncode != 0:
+            logger.error(
+                f"[{resource}] Command failed with return code {process.returncode}."
+            )
+            if stderr_output:
+                logger.error(f"[{resource}] STDERR:\n{stderr_output}")
+                # Also write stderr to a file for failed commands
+                stderr_file_path = (
+                    output_dir / f"{sanitized_command_filename}.stderr.log"
+                )
+                try:
+                    with open(stderr_file_path, "w", encoding="utf-8") as errfile:
+                        errfile.write(
+                            stderr_output + "\n"
+                        )  # Add newline for clarity if reading file
+                    logger.info(
+                        f"[{resource}] STDERR output written to: {stderr_file_path}"
+                    )
+                except Exception as e_err_write:
+                    logger.error(
+                        f"[{resource}] Failed to write STDERR to file {stderr_file_path}: {e_err_write}"
+                    )
+
+        else:
+            logger.info(
+                f"[{resource}] Command completed successfully (Return Code: {process.returncode}). STDOUT at {output_file_path}"
+            )
+            if stderr_output:
+                logger.info(
+                    f"[{resource}] STDERR (Note: command succeeded):\n{stderr_output}"
+                )
+                # Optionally write stderr to file even on success if it exists
+                stderr_file_path = (
+                    output_dir / f"{sanitized_command_filename}.stderr.log"
+                )
+                if stderr_output.strip():  # Only write if there's actual content
+                    try:
+                        with open(stderr_file_path, "w", encoding="utf-8") as errfile:
+                            errfile.write(stderr_output + "\n")
+                        logger.info(
+                            f"[{resource}] Non-empty STDERR output (on success) written to: {stderr_file_path}"
+                        )
+                    except Exception as e_err_write:
+                        logger.error(
+                            f"[{resource}] Failed to write STDERR (on success) to file {stderr_file_path}: {e_err_write}"
+                        )
+
+        if return_stdout:
+            return "\n".join(collected_stdout_lines)
+        return None
+
+    except FileNotFoundError:
+        logger.error(
+            f"[{resource}] Error: The command or shell for '{command_with_resource}' was not found."
+        )
+        raise
+    except Exception as e:
+        logger.error(
+            f"[{resource}] An unexpected error occurred while running command '{command_with_resource}': {e}",
+            exc_info=True,
+        )
+        raise
 
 
 class TaskState(Enum):
@@ -305,15 +434,64 @@ def run_tasks(
 
 
 if __name__ == "__main__":
-
-    # example command that runs python -c '' and a for loop that prints i and sleeps for 0.5s after each iteration using tqdm
-    cmd = f"python -c 'from tqdm import trange; from time import sleep; exec(\"for i in range(10):\\n    print(i, {RESOURCE_PLACEHOLDER})\\n    sleep(0.5)\")'"
-
-    task = ShellTask(
-        command=cmd,
-        depends_on=None,
+    # Configure basic logging for the example
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(threadName)s - %(message)s",
     )
-    run_tasks(
-        tasks=[task],
-        resources=[Resource(label=0, name="GPU")],
+
+    logger.info("Starting task execution example.")
+
+    # Example command that prints numbers with a delay, using the resource placeholder
+    # This command will show streaming output.
+    cmd_stream = (
+        f"echo 'Starting stream test for {RESOURCE_PLACEHOLDER}...'; "
+        f"for i in $(seq 1 5); do "
+        f"  echo 'Output line $i from {RESOURCE_PLACEHOLDER}'; "
+        f"  sleep 0.5; "
+        f"done; "
+        f"echo 'Stream test for {RESOURCE_PLACEHOLDER} finished.'"
     )
+
+    # Another command for a second task
+    cmd_quick = f"echo 'Quick task on {RESOURCE_PLACEHOLDER} reporting in!'; sleep 1"
+
+    # Create resources
+    gpu_resources = parse_resource_integer_string("0,1", resource_name="GPU")
+    # If you have only one resource for testing:
+    # gpu_resources = [Resource(label=0, name="GPU")]
+
+    # Define tasks
+    task1 = ShellTask(
+        command=cmd_stream,
+    )
+
+    task2 = ShellTask(
+        command=cmd_quick, depends_on=[task1]  # Task 2 will wait for Task 1
+    )
+
+    task3_independent = ShellTask(
+        command=f"echo 'Independent task on {RESOURCE_PLACEHOLDER} here!'; sleep 2"
+    )
+
+    all_tasks = [task1, task2, task3_independent]
+    # For a simpler test with one task:
+    # all_tasks = [task1]
+
+    if not gpu_resources:
+        logger.error(
+            "No GPU resources parsed. Exiting. Check parse_resource_integer_string input."
+        )
+    elif not all_tasks:
+        logger.error("No tasks defined. Exiting.")
+    else:
+        logger.info(
+            f"Running {len(all_tasks)} tasks on {len(gpu_resources)} resources."
+        )
+        run_tasks(
+            tasks=all_tasks,
+            resources=gpu_resources,
+            wait_between_task_starts=0.1,  # Small delay between starting threads
+        )
+
+    logger.info("Task execution example finished.")
